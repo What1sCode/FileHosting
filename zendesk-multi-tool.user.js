@@ -87,6 +87,21 @@
             name: 'MoKo',
             url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/fatality.mp3',
             emoji: '💀'
+                },
+        'pacman': {
+            name: 'Pac-Man',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/pacman.mp3',
+            emoji: '🎺'
+        },
+        'sfperfect': {
+            name: 'SF Perfect',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sfperfect.mp3',
+            emoji: '😬'
+         },
+        'mgsAlert': {
+            name: 'MGS Alert',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/mgsAlert.mp3',
+            emoji: '💀'
         }
     };
 
@@ -745,5 +760,6 @@
     console.log('🔧 Script loaded successfully');
 
 })();
+
 
 
