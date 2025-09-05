@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Moo Alert
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Auto-refresh views, Close All button, and sound alerts for new tickets
 // @author       You
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -211,7 +211,7 @@
 
         const container = document.createElement('div');
         container.style.cssText = `
-            margin-left: 8px;
+            margin-left: auto;
             display: inline-flex;
             align-items: center;
             gap: 4px;
