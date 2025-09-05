@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Moo Alert
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Auto-refresh views, Close All button, and sound alerts for new tickets
 // @author       You
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -68,6 +68,16 @@
         'uhoh': {
             name: 'Uh Oh',
             url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/uhoh.mp3',
+            emoji: '😬'
+        },
+        'HeyListen': {
+            name: 'Hey Listen',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/HeyListen.mp3',
+            emoji: '😬'
+        },
+        'fatality': {
+            name: 'MoKo',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/fatality.mp3',
             emoji: '😬'
         }
     };
@@ -474,4 +484,3 @@
     console.log('🔧 Script loaded successfully');
 
 })();
-
