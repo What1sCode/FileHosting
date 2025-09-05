@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Moo Alert
 // @namespace    http://tampermonkey.net/
-// @version      1.8
+// @version      1.9
 // @description  Auto-refresh views, Close All button, and sound alerts for new tickets
 // @author       You
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -411,6 +411,7 @@
             updateHeartbeat();
 
             console.log(`🔍 Background polling for new tickets via API (${currentPollingDelay/1000}s interval)...`);
+            console.log(`🔍 Debug: isInitialLoad = ${typeof isInitialLoad !== 'undefined' ? isInitialLoad : 'UNDEFINED'}, initialTicketCount = ${typeof initialTicketCount !== 'undefined' ? initialTicketCount : 'UNDEFINED'}`);
 
             const apiUrl = '/api/v2/views/31118901320727/tickets.json?per_page=100';
 
@@ -460,21 +461,58 @@
                 console.log(`🔍 API extracted ${currentTicketIds.size} ticket IDs`);
             }
 
-            if (previousTicketIds.size > 0) {
+            // Initialize variables if they're undefined (fallback for scope issues)
+            if (typeof isInitialLoad === 'undefined') {
+                console.warn('🔍 isInitialLoad was undefined, reinitializing...');
+                window.isInitialLoad = true;
+                window.initialTicketCount = 0;
+            }
+
+            // Handle initial load
+            if ((typeof isInitialLoad !== 'undefined' ? isInitialLoad : window.isInitialLoad)) {
+                const ticketCount = currentTicketIds.size;
+                if (typeof initialTicketCount !== 'undefined') {
+                    initialTicketCount = ticketCount;
+                } else {
+                    window.initialTicketCount = ticketCount;
+                }
+
+                previousTicketIds = new Set(currentTicketIds);
+
+                if (typeof isInitialLoad !== 'undefined') {
+                    isInitialLoad = false;
+                } else {
+                    window.isInitialLoad = false;
+                }
+
+                if (ticketCount === 0) {
+                    console.log('🔍 Initial load: Queue is empty - will alert on first new ticket');
+                } else {
+                    console.log(`🔍 Initial load: Found ${ticketCount} existing tickets - will only alert on additional tickets`);
+                }
+                return;
+            }
+
+            // Check for new tickets (only after initial load)
+            const currentInitialCount = typeof initialTicketCount !== 'undefined' ? initialTicketCount : window.initialTicketCount;
+            if (previousTicketIds.size > 0 || currentInitialCount === 0) {
                 const newTicketIds = [...currentTicketIds].filter(id => !previousTicketIds.has(id));
 
                 if (newTicketIds.length > 0) {
-                    console.log(`🎫 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
+                    // Special case: if we started with 0 tickets, any ticket should trigger alert
+                    if (currentInitialCount === 0 || previousTicketIds.size > 0) {
+                        console.log(`🎫 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
 
-                    if ('Notification' in window && Notification.permission === 'granted') {
-                        new Notification('🎫 New Zendesk Ticket!', {
-                            body: `${newTicketIds.length} new ticket(s): #${newTicketIds.join(', #')}`,
-                            icon: 'https://static.zdassets.com/classic/favicon.ico'
-                        });
+                        if ('Notification' in window && Notification.permission === 'granted') {
+                            new Notification('🎫 New Zendesk Ticket!', {
+                                body: `${newTicketIds.length} new ticket(s): #${newTicketIds.join(', #')}`,
+                                icon: 'https://static.zdassets.com/classic/favicon.ico'
+                            });
+                        }
+
+                        flashPageTitle();
+                        playSelectedSound();
                     }
-
-                    flashPageTitle();
-                    playSelectedSound();
                 }
 
                 const removedTicketIds = [...previousTicketIds].filter(id => !currentTicketIds.has(id));
