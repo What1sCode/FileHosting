@@ -1,24 +1,27 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Moo Alert
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Auto-refresh views, Close All button, and cow moo for new tickets
+// @version      1.3
+// @description  Auto-refresh views, Close All button, and sound alerts for new tickets
 // @author       You
 // @match        https://elotouchcare.zendesk.com/agent/*
 // @run-at       document-idle
 // @grant        none
+// @downloadURL  https://raw.githubusercontent.com/What1sCode/FileHosting/main/zendesk-multi-tool.user.js
+// @updateURL    https://raw.githubusercontent.com/What1sCode/FileHosting/main/zendesk-multi-tool.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    console.log('🐄 Zendesk Multi-Tool Starting...');
+    console.log('🔧 Zendesk Multi-Tool Starting...');
 
-    // State variables - ALL DECLARED HERE
-    let previousTicketIds = new Set(); // Track actual ticket IDs instead of just count
+    // State variables
+    let previousTicketIds = new Set();
     let refreshInterval = null;
     let ticketMonitorInterval = null;
     let closeAllButtonAdded = false;
+    let soundSelectorAdded = false;
 
     // Audio context
     let audioContext = null;
@@ -26,9 +29,44 @@
 
     // Background polling with rate limit handling
     let backgroundPollInterval = null;
-    let currentPollingDelay = 10000; // Start with 10 seconds
+    let currentPollingDelay = 10000;
     let rateLimitCount = 0;
     const TARGET_VIEW_URL = 'https://elotouchcare.zendesk.com/agent/filters/31118901320727';
+
+    // Sound options with GitHub URLs
+    const SOUND_OPTIONS = {
+        'cow': {
+            name: 'Cow Moo',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/cow-moo.mp3',
+            emoji: '🐄'
+        },
+        'guitar': {
+            name: 'Guitar Alert',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/guitaralert.wav',
+            emoji: '🎸'
+        },
+        'beep': {
+            name: 'Beep',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Beep.wav',
+            emoji: '🔔'
+        },
+        'scratch': {
+            name: 'Scratch',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/scratch-389.mp3',
+            emoji: '🎵'
+        }
+    };
+
+    // Get selected sound (default to cow)
+    function getSelectedSound() {
+        return localStorage.getItem('zendesk-sound-choice') || 'cow';
+    }
+
+    // Set selected sound
+    function setSelectedSound(soundKey) {
+        localStorage.setItem('zendesk-sound-choice', soundKey);
+        console.log(`🔊 Sound changed to: ${SOUND_OPTIONS[soundKey].name}`);
+    }
 
     // Initialize audio on first user interaction
     function initAudio() {
@@ -48,30 +86,33 @@
         document.addEventListener(eventType, initAudio, { once: true, passive: true });
     });
 
-    // Play real cow moo sound from GitHub
-    function playMooSound() {
+    // Play selected sound from GitHub
+    function playSelectedSound() {
         try {
+            const selectedSoundKey = getSelectedSound();
+            const soundConfig = SOUND_OPTIONS[selectedSoundKey];
+
             const audio = new Audio();
-            audio.src = 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/cow-moo.mp3';
+            audio.src = soundConfig.url;
             audio.volume = 0.7;
             audio.crossOrigin = 'anonymous';
 
-            console.log('🐄 Attempting to play cow moo from:', audio.src);
+            console.log(`${soundConfig.emoji} Attempting to play ${soundConfig.name} from:`, audio.src);
 
             const playPromise = audio.play();
             if (playPromise !== undefined) {
                 playPromise
                     .then(() => {
-                        console.log('🐄 REAL COW MOO played from GitHub!');
+                        console.log(`${soundConfig.emoji} ${soundConfig.name} played successfully!`);
                     })
                     .catch(error => {
-                        console.warn('🐄 GitHub audio failed, using backup moo:', error);
+                        console.warn(`${soundConfig.emoji} ${soundConfig.name} failed, using backup:`, error);
                         playBackupMoo();
                     });
             }
 
         } catch (error) {
-            console.warn('🐄 Audio failed, using backup:', error);
+            console.warn('🔊 Audio failed, using backup:', error);
             playBackupMoo();
         }
     }
@@ -80,7 +121,7 @@
     function playBackupMoo() {
         try {
             if (!audioContext || audioContext.state === 'suspended') {
-                console.log('🐄🐄🐄 NEW TICKET ALERT! 🐄🐄🐄 (Audio blocked)');
+                console.log('🔔🔔🔔 NEW TICKET ALERT! 🔔🔔🔔 (Audio blocked)');
                 return;
             }
 
@@ -103,10 +144,10 @@
             osc1.start(audioContext.currentTime);
             osc1.stop(audioContext.currentTime + 1.3);
 
-            console.log('🐄 Backup moo played!');
+            console.log('🔔 Backup sound played!');
 
         } catch (error) {
-            console.log('🐄🐄🐄 NEW TICKET ALERT! 🐄🐄🐄 (All audio failed)');
+            console.log('🔔🔔🔔 NEW TICKET ALERT! 🔔🔔🔔 (All audio failed)');
         }
     }
 
@@ -117,7 +158,7 @@
         const maxFlashes = 6;
 
         const flashInterval = setInterval(() => {
-            document.title = flashCount % 2 === 0 ? '🐄 NEW TICKET! 🐄' : originalTitle;
+            document.title = flashCount % 2 === 0 ? '🎫 NEW TICKET! 🎫' : originalTitle;
             flashCount++;
 
             if (flashCount >= maxFlashes) {
@@ -136,12 +177,96 @@
         }
     }
 
+    // Add sound selector dropdown back to tab bar
+    function addSoundSelector() {
+        if (soundSelectorAdded) return;
+
+        const tabBar = document.querySelector('[data-test-id="header-tablist"]');
+        if (!tabBar) return;
+
+        const container = document.createElement('div');
+        container.style.cssText = `
+            margin-left: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        `;
+
+        const label = document.createElement('span');
+        label.textContent = '🔊';
+        label.style.cssText = 'font-size: 12px;';
+
+        const selector = document.createElement('select');
+        selector.style.cssText = `
+            padding: 4px 6px;
+            font-size: 11px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            background-color: #fff;
+            cursor: pointer;
+        `;
+
+        // Add options
+        Object.entries(SOUND_OPTIONS).forEach(([key, config]) => {
+            const option = document.createElement('option');
+            option.value = key;
+            option.textContent = `${config.emoji} ${config.name}`;
+            selector.appendChild(option);
+        });
+
+        // Set current selection
+        selector.value = getSelectedSound();
+
+        // Handle changes
+        selector.addEventListener('change', (e) => {
+            const newSound = e.target.value;
+            setSelectedSound(newSound);
+
+            // Play test sound
+            setTimeout(() => {
+                playSelectedSound();
+            }, 100);
+        });
+
+        // Test button
+        const testButton = document.createElement('button');
+        testButton.textContent = '🔊';
+        testButton.title = 'Test current sound';
+        testButton.style.cssText = `
+            padding: 4px 6px;
+            font-size: 11px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            background-color: #f8f9fa;
+            cursor: pointer;
+            margin-left: 2px;
+        `;
+
+        testButton.addEventListener('click', () => {
+            playSelectedSound();
+        });
+
+        testButton.addEventListener('mouseenter', () => {
+            testButton.style.backgroundColor = '#e9ecef';
+        });
+        testButton.addEventListener('mouseleave', () => {
+            testButton.style.backgroundColor = '#f8f9fa';
+        });
+
+        container.appendChild(label);
+        container.appendChild(selector);
+        container.appendChild(testButton);
+        tabBar.appendChild(container);
+
+        soundSelectorAdded = true;
+        console.log('🔊 Sound selector added');
+    }
+
     // Background fetch ticket IDs via Zendesk API with rate limiting
     async function backgroundCheckTickets() {
         try {
             console.log(`🔍 Background polling for new tickets via API (${currentPollingDelay/1000}s interval)...`);
 
-            // Use Zendesk's views API to get the actual tickets, not just count
             const apiUrl = '/api/v2/views/31118901320727/tickets.json?per_page=100';
 
             const response = await fetch(apiUrl, {
@@ -185,7 +310,6 @@
 
             let currentTicketIds = new Set();
 
-            // Extract ticket IDs from API response
             if (data && data.tickets) {
                 data.tickets.forEach(ticket => {
                     currentTicketIds.add(ticket.id);
@@ -193,36 +317,29 @@
                 console.log(`🔍 API extracted ${currentTicketIds.size} ticket IDs`);
             }
 
-            // Check for NEW tickets (IDs that weren't there before)
-            if (previousTicketIds.size > 0) { // Only check after first poll
+            if (previousTicketIds.size > 0) {
                 const newTicketIds = [...currentTicketIds].filter(id => !previousTicketIds.has(id));
 
                 if (newTicketIds.length > 0) {
-                    console.log(`🐄 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
+                    console.log(`🎫 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
 
-                    // Show desktop notification
                     if ('Notification' in window && Notification.permission === 'granted') {
-                        new Notification('🐄 New Zendesk Ticket!', {
+                        new Notification('🎫 New Zendesk Ticket!', {
                             body: `${newTicketIds.length} new ticket(s): #${newTicketIds.join(', #')}`,
                             icon: 'https://static.zdassets.com/classic/favicon.ico'
                         });
                     }
 
-                    // Flash the page title
                     flashPageTitle();
-
-                    // Play the moo sound
-                    playMooSound();
+                    playSelectedSound();
                 }
 
-                // Also log if tickets were removed (for debugging)
                 const removedTicketIds = [...previousTicketIds].filter(id => !currentTicketIds.has(id));
                 if (removedTicketIds.length > 0) {
                     console.log(`🗑️ Tickets removed/resolved: ${removedTicketIds.join(', ')}`);
                 }
             }
 
-            // Update the tracked ticket IDs
             previousTicketIds = currentTicketIds;
             console.log(`🔍 Tracking ${previousTicketIds.size} tickets`);
 
@@ -242,7 +359,7 @@
         }
     }
 
-    // Add Close All button
+    // Add Close All button back to tab bar
     function addCloseAllButton() {
         if (closeAllButtonAdded) return;
 
@@ -285,7 +402,6 @@
     function init() {
         console.log('🚀 Initializing...');
 
-        // Auto-refresh only on filter pages
         if (window.location.href.includes('/agent/filters')) {
             setTimeout(() => {
                 autoRefresh();
@@ -294,7 +410,6 @@
             }, 5000);
         }
 
-        // Start background ticket monitoring with adaptive rate limiting
         setTimeout(() => {
             console.log('🔍 Starting background ticket monitoring...');
             backgroundCheckTickets();
@@ -306,7 +421,8 @@
 
         const buttonChecker = setInterval(() => {
             addCloseAllButton();
-            if (closeAllButtonAdded) {
+            addSoundSelector();
+            if (closeAllButtonAdded && soundSelectorAdded) {
                 clearInterval(buttonChecker);
             }
         }, 1000);
@@ -340,6 +456,6 @@
         }, 1000);
     }, 1000);
 
-    console.log('🐄 Script loaded successfully');
+    console.log('🔧 Script loaded successfully');
 
 })();
