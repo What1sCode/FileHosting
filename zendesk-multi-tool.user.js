@@ -54,6 +54,21 @@
             name: 'Scratch',
             url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/scratch-389.mp3',
             emoji: '🎵'
+        },
+        'stars': {
+            name: 'Stars',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Stars.mp3',
+            emoji: '⭐'
+        },
+        'sting': {
+            name: 'Sting',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sting.mp3',
+            emoji: '🎺'
+        },
+        'uhoh': {
+            name: 'Uh Oh',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/uhoh.mp3',
+            emoji: '😬'
         }
     };
 
