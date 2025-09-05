@@ -82,6 +82,11 @@
             name: 'Uh Oh',
             url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/uhoh.mp3',
             emoji: '😬'
+         },
+        'Fatality': {
+            name: 'MoKo',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/fatality.mp3',
+            emoji: '💀'
         }
     };
 
@@ -740,3 +745,4 @@
     console.log('🔧 Script loaded successfully');
 
 })();
+
