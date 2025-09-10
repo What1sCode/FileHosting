@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      1.12
+// @version      1.13
 // @description  Auto-refresh views, Close All button, and sound alerts for new tickets
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -107,6 +107,21 @@
             name: 'Listen',
             url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/HeyListen.mp3',
             emoji: '🎧'
+           },
+        'infant': {
+            name: 'DCC Infant',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/infant.mp3',
+            emoji: '👶'
+         },
+        'reward': {
+            name: 'DCC Reward',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/reward.mp3',
+            emoji: '🎁'
+          },
+        'whathappened': {
+            name: 'DCC What Happened',
+            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/whathappened.mp3',
+            emoji: '😮'
         }
     };
 
