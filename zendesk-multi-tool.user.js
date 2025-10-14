@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      1.13
-// @description  Auto-refresh views, Close All button, and sound alerts for new tickets
+// @version      1.14
+// @description  Auto-refresh views, Close All button, sound alerts with call detection
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
 // @run-at       document-idle
@@ -22,6 +22,12 @@
     let ticketMonitorInterval = null;
     let closeAllButtonAdded = false;
     let soundSelectorAdded = false;
+    let muteToggleAdded = false;
+
+    // Call detection state
+    let isAgentOnCall = false;
+    let callDetectionInterval = null;
+    let isSoundMuted = false;
 
     // Audio context
     let audioContext = null;
@@ -42,9 +48,9 @@
     let isTabVisible = true;
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 3;
-    const HEARTBEAT_TIMEOUT = 30000; // 30 seconds
-    const HEALTH_CHECK_INTERVAL = 60000; // 1 minute
-    const PERIODIC_RESTART_INTERVAL = 3600000; // 1 hour
+    const HEARTBEAT_TIMEOUT = 30000;
+    const HEALTH_CHECK_INTERVAL = 60000;
+    const PERIODIC_RESTART_INTERVAL = 3600000;
 
     // Sound options with GitHub URLs
     const SOUND_OPTIONS = {
@@ -136,6 +142,55 @@
         console.log(`🔊 Sound changed to: ${SOUND_OPTIONS[soundKey].name}`);
     }
 
+    // Detect if agent is on a call
+    function detectCallStatus() {
+        const callIndicator = document.querySelector('[data-test-id="call-controls"]') ||
+                             document.querySelector('[class*="call-controls"]') ||
+                             document.querySelector('[data-garden-id="chrome.nav_item"][aria-label*="Call"]');
+
+        const activeCallPanel = document.querySelector('[data-test-id="talk-active-call"]') ||
+                               document.querySelector('[class*="active-call"]') ||
+                               document.querySelector('[data-test-id="voice-channel-panel"]');
+
+        const callTimer = document.querySelector('[data-test-id="call-timer"]') ||
+                         document.querySelector('[class*="call-timer"]');
+
+        const wasOnCall = isAgentOnCall;
+        isAgentOnCall = !!(callIndicator || activeCallPanel || callTimer);
+
+        if (wasOnCall !== isAgentOnCall) {
+            if (isAgentOnCall) {
+                console.log('📞 Agent is now on a call - sounds muted');
+                isSoundMuted = true;
+                updateMuteButtonState();
+            } else {
+                console.log('📞 Agent is off call - sounds enabled');
+                isSoundMuted = false;
+                updateMuteButtonState();
+            }
+        }
+
+        return isAgentOnCall;
+    }
+
+    // Update mute button appearance
+    function updateMuteButtonState() {
+        const button = document.getElementById('manual-mute-toggle');
+        if (!button) return;
+
+        if (isSoundMuted || isAgentOnCall) {
+            button.textContent = isAgentOnCall ? '📞 On Call' : '🔇 Unmute';
+            button.style.backgroundColor = isAgentOnCall ? '#ff5722' : '#ffc107';
+            button.style.borderColor = isAgentOnCall ? '#f44336' : '#ff9800';
+            button.style.color = isAgentOnCall ? '#fff' : '#333';
+        } else {
+            button.textContent = '🔊 Mute';
+            button.style.backgroundColor = '#f8f9fa';
+            button.style.borderColor = '#ddd';
+            button.style.color = '#333';
+        }
+    }
+
     // Initialize audio context and unlock audio
     function initAudio() {
         if (!audioInitialized) {
@@ -144,7 +199,6 @@
                 audioInitialized = true;
                 console.log('🔊 Audio context initialized');
 
-                // Try to resume context if suspended
                 if (audioContext.state === 'suspended') {
                     audioContext.resume().then(() => {
                         console.log('🔊 Audio context resumed');
@@ -164,7 +218,6 @@
     // Aggressive audio unlock on user interaction
     function unlockAudio() {
         if (!audioUnlocked && audioContext) {
-            // Create a silent sound to unlock audio
             try {
                 const oscillator = audioContext.createOscillator();
                 const gainNode = audioContext.createGain();
@@ -200,12 +253,10 @@
 
         if (isTabVisible) {
             console.log('🔄 Tab visible - boosting polling frequency');
-            // Boost polling when tab becomes active
             if (currentPollingDelay > 10000) {
                 currentPollingDelay = 10000;
                 restartBackgroundPolling();
             }
-            // Immediate check when tab becomes visible
             setTimeout(backgroundCheckTickets, 1000);
         } else {
             console.log('🌙 Tab hidden - maintaining background polling');
@@ -233,7 +284,6 @@
                 restartBackgroundPolling();
             }
         } else {
-            // Reset failure counter on successful health check
             if (consecutiveFailures > 0) {
                 console.log('✅ Health check passed - resetting failure counter');
                 consecutiveFailures = 0;
@@ -245,15 +295,11 @@
     function restartBackgroundPolling() {
         console.log('🔄 Restarting background polling...');
 
-        // Clear existing interval
         if (backgroundPollInterval) {
             clearInterval(backgroundPollInterval);
         }
 
-        // Start fresh
         backgroundPollInterval = setInterval(backgroundCheckTickets, currentPollingDelay);
-
-        // Immediate check
         setTimeout(backgroundCheckTickets, 500);
     }
 
@@ -267,13 +313,11 @@
     function performFullRestart() {
         console.log('🚨 Performing full system restart...');
 
-        // Clear all intervals
         if (backgroundPollInterval) clearInterval(backgroundPollInterval);
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (healthCheckInterval) clearInterval(healthCheckInterval);
         if (periodicRestartInterval) clearInterval(periodicRestartInterval);
 
-        // Restart everything
         startReliabilitySystem();
     }
 
@@ -281,38 +325,59 @@
     function startReliabilitySystem() {
         console.log('🛡️ Starting reliability system...');
 
-        // Start background monitoring
-        backgroundCheckTickets(); // Initial check
+        backgroundCheckTickets();
         backgroundPollInterval = setInterval(backgroundCheckTickets, currentPollingDelay);
 
-        // Start heartbeat monitoring
         updateHeartbeat();
-        heartbeatInterval = setInterval(updateHeartbeat, 5000); // Update every 5 seconds
+        heartbeatInterval = setInterval(updateHeartbeat, 5000);
 
-        // Start health checks
         healthCheckInterval = setInterval(performHealthCheck, HEALTH_CHECK_INTERVAL);
-
-        // Start periodic restarts
         periodicRestartInterval = setInterval(performPeriodicRestart, PERIODIC_RESTART_INTERVAL);
 
-        // Setup page visibility handling
         document.addEventListener('visibilitychange', handleVisibilityChange);
 
         console.log('🛡️ Reliability system active - monitoring health every minute');
     }
 
-    // Enhanced sound playing
-    function playSelectedSound() {
-        console.log('🔊 Attempting to play sound...');
+    // Flash the page title and tab until focused
+    let titleFlashInterval = null;
 
-        // Ensure audio is initialized
-        if (!audioInitialized) {
-            initAudio();
+    function flashPageTitle() {
+        const originalTitle = document.title;
+
+        if (titleFlashInterval) {
+            clearInterval(titleFlashInterval);
+            titleFlashInterval = null;
         }
 
-        // Try to play audio file with fallback to visual alert
-        setTimeout(() => playAudioFile(), 100);
-        setTimeout(() => playVisualAlert(), 200);
+        titleFlashInterval = setInterval(() => {
+            if (document.hidden) {
+                document.title = document.title === originalTitle ? '🎫 NEW TICKET! 🎫' : originalTitle;
+            } else {
+                clearInterval(titleFlashInterval);
+                titleFlashInterval = null;
+                document.title = originalTitle;
+            }
+        }, 800);
+
+        const stopFlashingOnFocus = () => {
+            if (!document.hidden && titleFlashInterval) {
+                clearInterval(titleFlashInterval);
+                titleFlashInterval = null;
+                document.title = originalTitle;
+                document.removeEventListener('visibilitychange', stopFlashingOnFocus);
+            }
+        };
+
+        document.addEventListener('visibilitychange', stopFlashingOnFocus);
+
+        setTimeout(() => {
+            if (titleFlashInterval) {
+                clearInterval(titleFlashInterval);
+                titleFlashInterval = null;
+                document.title = originalTitle;
+            }
+        }, 300000);
     }
 
     // Try to play the selected audio file
@@ -326,7 +391,6 @@
             audio.volume = 0.7;
             audio.crossOrigin = 'anonymous';
 
-            // Add error handling
             audio.addEventListener('error', (e) => {
                 console.warn(`${soundConfig.emoji} Audio file failed to load:`, e);
             });
@@ -353,7 +417,6 @@
     function playVisualAlert() {
         console.log('🔔🔔🔔 NEW TICKET ALERT! 🔔🔔🔔 (Visual notification)');
 
-        // Create a visual flash effect
         const flashDiv = document.createElement('div');
         flashDiv.style.cssText = `
             position: fixed;
@@ -388,51 +451,23 @@
         }, 500);
     }
 
-    // Flash the page title and tab until focused
-    let titleFlashInterval = null;
-
-    function flashPageTitle() {
-        const originalTitle = document.title;
-
-        // Clear any existing flash interval
-        if (titleFlashInterval) {
-            clearInterval(titleFlashInterval);
-            titleFlashInterval = null;
+    // Enhanced sound playing with call detection
+    function playSelectedSound() {
+        // Check if agent is on a call or manually muted
+        if (isSoundMuted || detectCallStatus()) {
+            console.log('🔇 Sound muted (agent on call or manually muted)');
+            flashPageTitle();
+            return;
         }
 
-        // Start flashing
-        titleFlashInterval = setInterval(() => {
-            if (document.hidden) {
-                // Tab is not focused, keep flashing
-                document.title = document.title === originalTitle ? '🎫 NEW TICKET! 🎫' : originalTitle;
-            } else {
-                // Tab is focused, stop flashing and restore original title
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-            }
-        }, 800);
+        console.log('🔊 Attempting to play sound...');
 
-        // Also set up a listener to stop flashing when tab becomes visible
-        const stopFlashingOnFocus = () => {
-            if (!document.hidden && titleFlashInterval) {
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-                document.removeEventListener('visibilitychange', stopFlashingOnFocus);
-            }
-        };
+        if (!audioInitialized) {
+            initAudio();
+        }
 
-        document.addEventListener('visibilitychange', stopFlashingOnFocus);
-
-        // Fallback: stop flashing after 5 minutes regardless
-        setTimeout(() => {
-            if (titleFlashInterval) {
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-            }
-        }, 300000); // 5 minutes
+        setTimeout(() => playAudioFile(), 100);
+        setTimeout(() => playVisualAlert(), 200);
     }
 
     // Request notification permission
@@ -447,11 +482,9 @@
     // Background fetch ticket IDs via Zendesk API with rate limiting
     async function backgroundCheckTickets() {
         try {
-            // Update heartbeat to show we're still alive
             updateHeartbeat();
 
             console.log(`🔍 Background polling for new tickets via API (${currentPollingDelay/1000}s interval)...`);
-            console.log(`🔍 Debug: isInitialLoad = ${typeof isInitialLoad !== 'undefined' ? isInitialLoad : 'UNDEFINED'}, initialTicketCount = ${typeof initialTicketCount !== 'undefined' ? initialTicketCount : 'UNDEFINED'}`);
 
             const apiUrl = '/api/v2/views/31118901320727/tickets.json?per_page=100';
 
@@ -466,8 +499,7 @@
             if (response.status === 429) {
                 rateLimitCount++;
                 currentPollingDelay = Math.min(currentPollingDelay * 2, 60000);
-                console.warn(`🔍 Rate limited! Increasing interval to ${currentPollingDelay/1000}s (attempt ${rateLimitCount})`);
-
+                console.warn(`⏱️ Rate limited! Increasing interval to ${currentPollingDelay/1000}s (attempt ${rateLimitCount})`);
                 restartBackgroundPolling();
                 return;
             }
@@ -478,14 +510,12 @@
                 return;
             }
 
-            // Reset failure count on successful response
             consecutiveFailures = 0;
 
             if (rateLimitCount > 0) {
                 rateLimitCount = 0;
                 currentPollingDelay = Math.max(currentPollingDelay * 0.8, 10000);
                 console.log(`🔍 API recovered, reducing interval to ${currentPollingDelay/1000}s`);
-
                 restartBackgroundPolling();
             }
 
@@ -501,29 +531,16 @@
                 console.log(`🔍 API extracted ${currentTicketIds.size} ticket IDs`);
             }
 
-            // Initialize variables if they're undefined (fallback for scope issues)
-            if (typeof isInitialLoad === 'undefined') {
-                console.warn('🔍 isInitialLoad was undefined, reinitializing...');
+            if (typeof window.isInitialLoad === 'undefined') {
                 window.isInitialLoad = true;
                 window.initialTicketCount = 0;
             }
 
-            // Handle initial load
-            if ((typeof isInitialLoad !== 'undefined' ? isInitialLoad : window.isInitialLoad)) {
+            if (window.isInitialLoad) {
                 const ticketCount = currentTicketIds.size;
-                if (typeof initialTicketCount !== 'undefined') {
-                    initialTicketCount = ticketCount;
-                } else {
-                    window.initialTicketCount = ticketCount;
-                }
-
+                window.initialTicketCount = ticketCount;
                 previousTicketIds = new Set(currentTicketIds);
-
-                if (typeof isInitialLoad !== 'undefined') {
-                    isInitialLoad = false;
-                } else {
-                    window.isInitialLoad = false;
-                }
+                window.isInitialLoad = false;
 
                 if (ticketCount === 0) {
                     console.log('🔍 Initial load: Queue is empty - will alert on first new ticket');
@@ -533,14 +550,11 @@
                 return;
             }
 
-            // Check for new tickets (only after initial load)
-            const currentInitialCount = typeof initialTicketCount !== 'undefined' ? initialTicketCount : window.initialTicketCount;
-            if (previousTicketIds.size > 0 || currentInitialCount === 0) {
+            if (previousTicketIds.size > 0 || window.initialTicketCount === 0) {
                 const newTicketIds = [...currentTicketIds].filter(id => !previousTicketIds.has(id));
 
                 if (newTicketIds.length > 0) {
-                    // Special case: if we started with 0 tickets, any ticket should trigger alert
-                    if (currentInitialCount === 0 || previousTicketIds.size > 0) {
+                    if (window.initialTicketCount === 0 || previousTicketIds.size > 0) {
                         console.log(`🎫 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
 
                         if ('Notification' in window && Notification.permission === 'granted') {
@@ -570,7 +584,52 @@
         }
     }
 
-    // Add sound selector dropdown back to tab bar
+    // Add mute toggle button
+    function addMuteToggleButton() {
+        if (muteToggleAdded) return;
+
+        const tabBar = document.querySelector('[data-test-id="header-tablist"]');
+        if (!tabBar) return;
+
+        const button = document.createElement('button');
+        button.id = 'manual-mute-toggle';
+        button.style.cssText = `
+            margin-left: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: 500;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #333;
+        `;
+
+        updateMuteButtonState();
+
+        button.addEventListener('click', function() {
+            if (!isAgentOnCall) {
+                isSoundMuted = !isSoundMuted;
+                updateMuteButtonState();
+                console.log(isSoundMuted ? '🔇 Sounds manually muted' : '🔊 Sounds manually unmuted');
+            }
+        });
+
+        button.addEventListener('mouseenter', () => {
+            if (!isSoundMuted && !isAgentOnCall) {
+                button.style.backgroundColor = '#e9ecef';
+            }
+        });
+        button.addEventListener('mouseleave', () => {
+            updateMuteButtonState();
+        });
+
+        tabBar.appendChild(button);
+        muteToggleAdded = true;
+        console.log('✅ Mute toggle button added');
+    }
+
+    // Add sound selector dropdown
     function addSoundSelector() {
         if (soundSelectorAdded) return;
 
@@ -599,7 +658,6 @@
             cursor: pointer;
         `;
 
-        // Add options
         Object.entries(SOUND_OPTIONS).forEach(([key, config]) => {
             const option = document.createElement('option');
             option.value = key;
@@ -607,25 +665,18 @@
             selector.appendChild(option);
         });
 
-        // Set current selection
         selector.value = getSelectedSound();
 
-        // Handle changes
         selector.addEventListener('change', (e) => {
             const newSound = e.target.value;
             setSelectedSound(newSound);
-
-            // Initialize audio on user interaction
             initAudio();
             unlockAudio();
-
-            // Play test sound
             setTimeout(() => {
                 playSelectedSound();
             }, 100);
         });
 
-        // Test button with enhanced audio initialization
         const testButton = document.createElement('button');
         testButton.textContent = '🔊';
         testButton.title = 'Test current sound';
@@ -640,7 +691,6 @@
         `;
 
         testButton.addEventListener('click', () => {
-            // Force audio initialization on button click
             initAudio();
             unlockAudio();
             playSelectedSound();
@@ -673,7 +723,7 @@
         }
     }
 
-    // Add Close All button back to tab bar
+    // Add Close All button
     function addCloseAllButton() {
         if (closeAllButtonAdded) return;
 
@@ -695,7 +745,6 @@
         `;
 
         button.addEventListener('click', function() {
-            // Initialize audio on user interaction
             initAudio();
             unlockAudio();
 
@@ -716,11 +765,16 @@
         console.log('✅ Close All button added');
     }
 
+    // Start call detection monitoring
+    function startCallDetection() {
+        callDetectionInterval = setInterval(detectCallStatus, 2000);
+        console.log('📞 Call detection monitoring started');
+    }
+
     // Initialize everything
     function init() {
         console.log('🚀 Initializing...');
 
-        // Initialize audio early
         setTimeout(() => {
             initAudio();
         }, 1000);
@@ -739,12 +793,15 @@
             console.log(`🔍 Background monitoring active with health checks every ${HEALTH_CHECK_INTERVAL/1000}s`);
         }, 3000);
 
+        setTimeout(startCallDetection, 3000);
+
         requestNotificationPermission();
 
         const buttonChecker = setInterval(() => {
             addCloseAllButton();
             addSoundSelector();
-            if (closeAllButtonAdded && soundSelectorAdded) {
+            addMuteToggleButton();
+            if (closeAllButtonAdded && soundSelectorAdded && muteToggleAdded) {
                 clearInterval(buttonChecker);
             }
         }, 1000);
@@ -752,14 +809,11 @@
         setTimeout(() => clearInterval(buttonChecker), 30000);
     }
 
-    // Wait for page to load then initialize
     setTimeout(() => {
         init();
 
-        // Enhanced audio initialization
         setTimeout(() => {
             try {
-                // Create a fake user interaction to unlock audio
                 const clickEvent = new MouseEvent('click', {
                     view: window,
                     bubbles: true,
@@ -780,7 +834,3 @@
     console.log('🔧 Script loaded successfully');
 
 })();
-
-
-
-
