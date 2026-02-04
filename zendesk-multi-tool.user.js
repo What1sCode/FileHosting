@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      1.15
+// @version      1.16
 // @description  Auto-refresh views, Close All button, sound alerts with call detection
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -838,3 +838,4 @@
     console.log('🔧 Script loaded successfully');
 
 })();
+
