@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      1.17
+// @version      1.18
 // @description  Auto-refresh views, Close All button, sound alerts with call detection
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -588,8 +588,8 @@
     function addMuteToggleButton() {
         if (muteToggleAdded) return;
 
-        //Query flex item
-        const tabBar = document.querySelector('[class="sc-gFVvzn cSMvKx"]');
+        // FIXED: Use stable data-test-id selector instead of brittle CSS classes
+        const tabBar = document.querySelector('[data-test-id="header-tablist"]');
         if (!tabBar) return;
 
         const button = document.createElement('button');
@@ -623,8 +623,7 @@
             updateMuteButtonState();
         });
 
-        //Append after flex item
-        tabBar.after(button);
+        tabBar.appendChild(button);
         muteToggleAdded = true;
         console.log('✅ Mute toggle button added');
         updateMuteButtonState();
@@ -634,16 +633,19 @@
     function addSoundSelector() {
         if (soundSelectorAdded) return;
 
-        //Changed query to the mute toggle button
-        const tabBar = document.querySelector('[id="manual-mute-toggle"]');
-        if (!tabBar) return;
+        // This depends on the mute button existing first
+        const muteButton = document.querySelector('[id="manual-mute-toggle"]');
+        if (!muteButton) return;
 
         const container = document.createElement('div');
         container.style.cssText = `
-            margin-left: auto;
+            position: fixed;
+            top: 12px;
+            right: 200px;
             display: inline-flex;
             align-items: center;
             gap: 4px;
+            z-index: 9999;
         `;
 
         const label = document.createElement('span');
@@ -709,8 +711,7 @@
         container.appendChild(selector);
         container.appendChild(testButton);
 
-        //Append before mute toggle button
-        tabBar.before(container);
+        muteButton.after(container);
 
         soundSelectorAdded = true;
         console.log('🔊 Sound selector added');
@@ -801,10 +802,11 @@
 
         requestNotificationPermission();
 
+        // FIXED: Reordered so mute button is created BEFORE sound selector tries to find it
         const buttonChecker = setInterval(() => {
             addCloseAllButton();
+            addMuteToggleButton();// Must run before addSoundSelector
             addSoundSelector();
-            addMuteToggleButton();
             if (closeAllButtonAdded && soundSelectorAdded && muteToggleAdded) {
                 clearInterval(buttonChecker);
             }
@@ -838,5 +840,3 @@
     console.log('🔧 Script loaded successfully');
 
 })();
-
-
