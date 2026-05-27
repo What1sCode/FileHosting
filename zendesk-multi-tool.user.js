@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      1.18
-// @description  Auto-refresh views, Close All button, sound alerts with call detection
+// @version      2.0.7
+// @description  Reliable Zendesk view polling, close-all tabs, sound alerts, notifications, and call-aware muting.
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
 // @run-at       document-idle
@@ -11,832 +11,802 @@
 // @updateURL    https://raw.githubusercontent.com/What1sCode/FileHosting/main/zendesk-multi-tool.user.js
 // ==/UserScript==
 
-(function() {
+(function zendeskMultiTool() {
     'use strict';
 
-    console.log('🔧 Zendesk Multi-Tool Starting...');
+    const Config = Object.freeze({
+        viewId: '31118901320727',
+        minPollingDelayMs: 10000,
+        maxPollingDelayMs: 60000,
+        fetchTimeoutMs: 15000,
+        autoRefreshDelayMs: 10000,
+        callDetectionDelayMs: 2000,
+        uiReconcileDelayMs: 1500,
+        titleFlashMs: 800,
+        titleFlashTimeoutMs: 300000,
+        storagePrefix: 'zendesk-multi-tool',
+        ids: {
+            toolbar: 'zmt-toolbar',
+            closeAllButton: 'zmt-close-all',
+            muteButton: 'zmt-mute-toggle',
+            soundSelector: 'zmt-sound-selector',
+            style: 'zmt-style'
+        },
+        selectors: {
+            tabBar: '[data-test-id="header-tablist"]',
+            toolbarHosts: [
+                '[data-test-id="header-toolbar"]',
+                '[data-test-id="chrome-header"]',
+                '[data-test-id*="topbar" i]',
+                '[data-garden-id="chrome.header"]',
+                'header [role="toolbar"]',
+                'header'
+            ],
+            toolbarAnchors: [
+                '[aria-label*="Conversation" i]',
+                '[data-test-id*="conversation" i]'
+            ],
+            closeButtons: 'button[data-test-id="close-button"]',
+            refreshButton: '[data-test-id="views_views-list_header-refresh"]',
+            activeCall: [
+                '[data-test-id="talk-active-call"]',
+                '[data-test-id="call-timer"]',
+                '[data-test-id="voice-channel-panel"] [data-test-id*="active"]',
+                '[data-test-id*="active-call"]',
+                '[aria-label*="End call" i]',
+                '[aria-label*="Mute call" i]',
+                '[class*="active-call" i]',
+                '[class*="call-timer" i]'
+            ]
+        },
+        sounds: {
+            cow: {
+                name: 'Cow Moo',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/cow-moo.mp3',
+                icon: 'Cow'
+            },
+            guitar: {
+                name: 'Guitar Alert',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/guitaralert.wav',
+                icon: 'Gtr'
+            },
+            beep: {
+                name: 'Beep',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Beep.wav',
+                icon: 'Bell'
+            },
+            scratch: {
+                name: 'Scratch',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/scratch-389.mp3',
+                icon: 'Note'
+            },
+            stars: {
+                name: 'Stars',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Stars.mp3',
+                icon: 'Star'
+            },
+            sting: {
+                name: 'Sting',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sting.mp3',
+                icon: 'Horn'
+            },
+            uhoh: {
+                name: 'Uh Oh',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/uhoh.mp3',
+                icon: 'Uh'
+            },
+            fatality: {
+                name: 'MoKo',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/fatality.mp3',
+                icon: 'Moko'
+            },
+            pacman: {
+                name: 'Pac-Man',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/pacman.mp3',
+                icon: 'Pac'
+            },
+            sfperfect: {
+                name: 'SF Perfect',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sfperfect.mp3',
+                icon: 'SF'
+            },
+            mgsAlert: {
+                name: 'MGS Alert',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/mgsAlert.mp3',
+                icon: 'MGS'
+            },
+            heyListen: {
+                name: 'Listen',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/HeyListen.mp3',
+                icon: 'Hey'
+            },
+            infant: {
+                name: 'DCC Infant',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/infant.mp3',
+                icon: 'DCC'
+            },
+            reward: {
+                name: 'DCC Reward',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/reward.mp3',
+                icon: 'Gift'
+            },
+            whathappened: {
+                name: 'DCC What Happened',
+                url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/whathappened.mp3',
+                icon: 'What'
+            }
+        }
+    });
 
-    // State variables
-    let previousTicketIds = new Set();
-    let refreshInterval = null;
-    let ticketMonitorInterval = null;
-    let closeAllButtonAdded = false;
-    let soundSelectorAdded = false;
-    let muteToggleAdded = false;
-
-    // Call detection state
-    let isAgentOnCall = false;
-    let callDetectionInterval = null;
-    let isSoundMuted = false;
-
-    // Audio context
-    let audioContext = null;
-    let audioInitialized = false;
-    let audioUnlocked = false;
-
-    // Background polling with rate limit handling
-    let backgroundPollInterval = null;
-    let currentPollingDelay = 10000;
-    let rateLimitCount = 0;
-    const TARGET_VIEW_URL = 'https://elotouchcare.zendesk.com/agent/filters/31118901320727';
-
-    // Reliability and "keep alive" mechanisms
-    let lastHeartbeat = Date.now();
-    let heartbeatInterval = null;
-    let healthCheckInterval = null;
-    let periodicRestartInterval = null;
-    let isTabVisible = true;
-    let consecutiveFailures = 0;
-    const MAX_CONSECUTIVE_FAILURES = 3;
-    const HEARTBEAT_TIMEOUT = 30000;
-    const HEALTH_CHECK_INTERVAL = 60000;
-    const PERIODIC_RESTART_INTERVAL = 3600000;
-
-    // Sound options with GitHub URLs
-    const SOUND_OPTIONS = {
-        'cow': {
-            name: 'Cow Moo',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/cow-moo.mp3',
-            emoji: '🐄'
+    const Logger = {
+        info(...args) {
+            console.info('[Zendesk Multi-Tool]', ...args);
         },
-        'guitar': {
-            name: 'Guitar Alert',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/guitaralert.wav',
-            emoji: '🎸'
+        warn(...args) {
+            console.warn('[Zendesk Multi-Tool]', ...args);
         },
-        'beep': {
-            name: 'Beep',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Beep.wav',
-            emoji: '🔔'
-        },
-        'scratch': {
-            name: 'Scratch',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/scratch-389.mp3',
-            emoji: '🎵'
-        },
-        'stars': {
-            name: 'Stars',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/Stars.mp3',
-            emoji: '⭐'
-        },
-        'sting': {
-            name: 'Sting',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sting.mp3',
-            emoji: '🎺'
-        },
-        'uhoh': {
-            name: 'Uh Oh',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/uhoh.mp3',
-            emoji: '😬'
-         },
-        'Fatality': {
-            name: 'MoKo',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/fatality.mp3',
-            emoji: '💀'
-                },
-        'pacman': {
-            name: 'Pac-Man',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/pacman.mp3',
-            emoji: '🎺'
-        },
-        'sfperfect': {
-            name: 'SF Perfect',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/sfperfect.mp3',
-            emoji: '😬'
-         },
-        'mgsAlert': {
-            name: 'MGS Alert',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/mgsAlert.mp3',
-            emoji: '💀'
-          },
-        'HeyListen': {
-            name: 'Listen',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/HeyListen.mp3',
-            emoji: '🎧'
-           },
-        'infant': {
-            name: 'DCC Infant',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/infant.mp3',
-            emoji: '👶'
-         },
-        'reward': {
-            name: 'DCC Reward',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/reward.mp3',
-            emoji: '🎁'
-          },
-        'whathappened': {
-            name: 'DCC What Happened',
-            url: 'https://raw.githubusercontent.com/What1sCode/FileHosting/main/whathappened.mp3',
-            emoji: '😮'
+        error(...args) {
+            console.error('[Zendesk Multi-Tool]', ...args);
         }
     };
 
-    // Get selected sound (default to cow)
-    function getSelectedSound() {
-        return localStorage.getItem('zendesk-sound-choice') || 'cow';
-    }
+    const State = {
+        previousTicketIds: new Set(),
+        initialLoad: true,
+        manuallyMuted: false,
+        onCall: false,
+        audioUnlocked: false,
+        audioInitialized: false,
+        audioContext: null,
+        pollingDelayMs: Config.minPollingDelayMs,
+        pollTimer: null,
+        pollInFlight: false,
+        pollAbortController: null,
+        rateLimitCount: 0,
+        lastPollStartedAt: null,
+        lastPollCompletedAt: null,
+        lastSuccessfulPollAt: null,
+        lastTicketCount: 0,
+        mutationObserver: null,
+        uiReconcileQueued: false,
+        titleFlashTimer: null,
+        originalTitle: document.title,
+        timers: new Set()
+    };
 
-    // Set selected sound
-    function setSelectedSound(soundKey) {
-        localStorage.setItem('zendesk-sound-choice', soundKey);
-        console.log(`🔊 Sound changed to: ${SOUND_OPTIONS[soundKey].name}`);
-    }
-
-    // Detect if agent is on a call
-    function detectCallStatus() {
-        const callIndicator = document.querySelector('[data-test-id="call-controls"]') ||
-                             document.querySelector('[class*="call-controls"]') ||
-                             document.querySelector('[data-garden-id="chrome.nav_item"][aria-label*="Call"]');
-
-        const activeCallPanel = document.querySelector('[data-test-id="talk-active-call"]') ||
-                               document.querySelector('[class*="active-call"]') ||
-                               document.querySelector('[data-test-id="voice-channel-panel"]');
-
-        const callTimer = document.querySelector('[data-test-id="call-timer"]') ||
-                         document.querySelector('[class*="call-timer"]');
-
-        const wasOnCall = isAgentOnCall;
-        isAgentOnCall = !!(callIndicator || activeCallPanel || callTimer);
-
-        if (wasOnCall !== isAgentOnCall) {
-            if (isAgentOnCall) {
-                console.log('📞 Agent is now on a call - sounds muted');
-                isSoundMuted = true;
-                updateMuteButtonState();
-            } else {
-                console.log('📞 Agent is off call - sounds enabled');
-                isSoundMuted = false;
-                updateMuteButtonState();
-            }
+    const Store = {
+        key(name) {
+            return `${Config.storagePrefix}:${name}`;
+        },
+        get(name, fallback) {
+            const value = localStorage.getItem(Store.key(name));
+            return value === null ? fallback : value;
+        },
+        set(name, value) {
+            localStorage.setItem(Store.key(name), value);
+        },
+        getBoolean(name, fallback) {
+            const value = Store.get(name, null);
+            return value === null ? fallback : value === 'true';
+        },
+        setBoolean(name, value) {
+            Store.set(name, String(Boolean(value)));
+        },
+        getSoundKey() {
+            const saved = Store.get('sound', 'cow');
+            return Object.prototype.hasOwnProperty.call(Config.sounds, saved) ? saved : 'cow';
+        },
+        setSoundKey(soundKey) {
+            const validSoundKey = Object.prototype.hasOwnProperty.call(Config.sounds, soundKey) ? soundKey : 'cow';
+            Store.set('sound', validSoundKey);
+            return validSoundKey;
         }
+    };
 
-        return isAgentOnCall;
-    }
-
-    // Update mute button appearance
-    function updateMuteButtonState() {
-        const button = document.getElementById('manual-mute-toggle');
-        if (!button) return;
-
-        if (isSoundMuted || isAgentOnCall) {
-            button.textContent = isAgentOnCall ? '📞 On Call' : '🔇 Unmute';
-            button.style.backgroundColor = isAgentOnCall ? '#ff5722' : '#ffc107';
-            button.style.borderColor = isAgentOnCall ? '#f44336' : '#ff9800';
-            button.style.color = isAgentOnCall ? '#fff' : '#333';
-        } else {
-            button.textContent = '🔊 Mute';
-            button.style.backgroundColor = '#f8f9fa';
-            button.style.borderColor = '#ddd';
-            button.style.color = '#333';
+    const Scheduler = {
+        setInterval(fn, delayMs) {
+            const timer = window.setInterval(fn, delayMs);
+            State.timers.add(timer);
+            return timer;
+        },
+        setTimeout(fn, delayMs) {
+            const timer = window.setTimeout(() => {
+                State.timers.delete(timer);
+                fn();
+            }, delayMs);
+            State.timers.add(timer);
+            return timer;
+        },
+        clear(timer) {
+            window.clearInterval(timer);
+            window.clearTimeout(timer);
+            State.timers.delete(timer);
+        },
+        cleanup() {
+            State.timers.forEach(timer => {
+                window.clearInterval(timer);
+                window.clearTimeout(timer);
+            });
+            State.timers.clear();
         }
-    }
+    };
 
-    // Initialize audio context and unlock audio
-    function initAudio() {
-        if (!audioInitialized) {
-            try {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                audioInitialized = true;
-                console.log('🔊 Audio context initialized');
+    const Styles = {
+        ensure() {
+            if (document.getElementById(Config.ids.style)) return;
 
-                if (audioContext.state === 'suspended') {
-                    audioContext.resume().then(() => {
-                        console.log('🔊 Audio context resumed');
-                        audioUnlocked = true;
-                    }).catch(err => {
-                        console.warn('🔊 Failed to resume audio context:', err);
-                    });
-                } else {
-                    audioUnlocked = true;
+            const style = document.createElement('style');
+            style.id = Config.ids.style;
+            style.textContent = `
+                #${Config.ids.toolbar} {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    margin-left: auto;
+                    margin-right: 20px;
+                    white-space: nowrap;
+                    flex: 0 0 auto;
+                    order: 900;
                 }
-            } catch (error) {
-                console.error('🔊 Audio init failed:', error);
-            }
-        }
-    }
 
-    // Aggressive audio unlock on user interaction
-    function unlockAudio() {
-        if (!audioUnlocked && audioContext) {
-            try {
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-
-                gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-                oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
-
-                oscillator.start(audioContext.currentTime);
-                oscillator.stop(audioContext.currentTime + 0.001);
-
-                audioUnlocked = true;
-                console.log('🔊 Audio unlocked via user interaction');
-            } catch (error) {
-                console.warn('🔊 Audio unlock failed:', error);
-            }
-        }
-    }
-
-    // Enhanced audio initialization on any user interaction
-    ['click', 'keydown', 'touchstart', 'mousedown'].forEach(eventType => {
-        document.addEventListener(eventType, () => {
-            initAudio();
-            unlockAudio();
-        }, { once: true, passive: true });
-    });
-
-    // Page visibility detection for tab focus handling
-    function handleVisibilityChange() {
-        isTabVisible = !document.hidden;
-
-        if (isTabVisible) {
-            console.log('🔄 Tab visible - boosting polling frequency');
-            if (currentPollingDelay > 10000) {
-                currentPollingDelay = 10000;
-                restartBackgroundPolling();
-            }
-            setTimeout(backgroundCheckTickets, 1000);
-        } else {
-            console.log('🌙 Tab hidden - maintaining background polling');
-        }
-    }
-
-    // Heartbeat system to detect if polling has stopped
-    function updateHeartbeat() {
-        lastHeartbeat = Date.now();
-    }
-
-    // Health check to ensure polling is still active
-    function performHealthCheck() {
-        const timeSinceLastHeartbeat = Date.now() - lastHeartbeat;
-
-        if (timeSinceLastHeartbeat > HEARTBEAT_TIMEOUT) {
-            console.warn(`🚨 Heartbeat timeout! ${timeSinceLastHeartbeat}ms since last poll. Restarting...`);
-            consecutiveFailures++;
-
-            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                console.error('🚨 Multiple consecutive failures! Performing full restart...');
-                performFullRestart();
-                consecutiveFailures = 0;
-            } else {
-                restartBackgroundPolling();
-            }
-        } else {
-            if (consecutiveFailures > 0) {
-                console.log('✅ Health check passed - resetting failure counter');
-                consecutiveFailures = 0;
-            }
-        }
-    }
-
-    // Restart background polling
-    function restartBackgroundPolling() {
-        console.log('🔄 Restarting background polling...');
-
-        if (backgroundPollInterval) {
-            clearInterval(backgroundPollInterval);
-        }
-
-        backgroundPollInterval = setInterval(backgroundCheckTickets, currentPollingDelay);
-        setTimeout(backgroundCheckTickets, 500);
-    }
-
-    // Periodic restart to prevent drift and memory leaks
-    function performPeriodicRestart() {
-        console.log('🔄 Performing periodic restart (hourly maintenance)...');
-        restartBackgroundPolling();
-    }
-
-    // Full restart of all monitoring systems
-    function performFullRestart() {
-        console.log('🚨 Performing full system restart...');
-
-        if (backgroundPollInterval) clearInterval(backgroundPollInterval);
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
-        if (healthCheckInterval) clearInterval(healthCheckInterval);
-        if (periodicRestartInterval) clearInterval(periodicRestartInterval);
-
-        startReliabilitySystem();
-    }
-
-    // Start all reliability mechanisms
-    function startReliabilitySystem() {
-        console.log('🛡️ Starting reliability system...');
-
-        backgroundCheckTickets();
-        backgroundPollInterval = setInterval(backgroundCheckTickets, currentPollingDelay);
-
-        updateHeartbeat();
-        heartbeatInterval = setInterval(updateHeartbeat, 5000);
-
-        healthCheckInterval = setInterval(performHealthCheck, HEALTH_CHECK_INTERVAL);
-        periodicRestartInterval = setInterval(performPeriodicRestart, PERIODIC_RESTART_INTERVAL);
-
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-
-        console.log('🛡️ Reliability system active - monitoring health every minute');
-    }
-
-    // Flash the page title and tab until focused
-    let titleFlashInterval = null;
-
-    function flashPageTitle() {
-        const originalTitle = document.title;
-
-        if (titleFlashInterval) {
-            clearInterval(titleFlashInterval);
-            titleFlashInterval = null;
-        }
-
-        titleFlashInterval = setInterval(() => {
-            if (document.hidden) {
-                document.title = document.title === originalTitle ? '🎫 NEW TICKET! 🎫' : originalTitle;
-            } else {
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-            }
-        }, 800);
-
-        const stopFlashingOnFocus = () => {
-            if (!document.hidden && titleFlashInterval) {
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-                document.removeEventListener('visibilitychange', stopFlashingOnFocus);
-            }
-        };
-
-        document.addEventListener('visibilitychange', stopFlashingOnFocus);
-
-        setTimeout(() => {
-            if (titleFlashInterval) {
-                clearInterval(titleFlashInterval);
-                titleFlashInterval = null;
-                document.title = originalTitle;
-            }
-        }, 300000);
-    }
-
-    // Try to play the selected audio file
-    function playAudioFile() {
-        try {
-            const selectedSoundKey = getSelectedSound();
-            const soundConfig = SOUND_OPTIONS[selectedSoundKey];
-
-            const audio = new Audio();
-            audio.src = soundConfig.url;
-            audio.volume = 0.7;
-            audio.crossOrigin = 'anonymous';
-
-            audio.addEventListener('error', (e) => {
-                console.warn(`${soundConfig.emoji} Audio file failed to load:`, e);
-            });
-
-            console.log(`${soundConfig.emoji} Attempting to play ${soundConfig.name} from:`, audio.src);
-
-            const playPromise = audio.play();
-            if (playPromise !== undefined) {
-                playPromise
-                    .then(() => {
-                        console.log(`${soundConfig.emoji} ${soundConfig.name} played successfully!`);
-                    })
-                    .catch(error => {
-                        console.warn(`${soundConfig.emoji} ${soundConfig.name} failed:`, error);
-                    });
-            }
-
-        } catch (error) {
-            console.warn('🔊 Audio file method failed:', error);
-        }
-    }
-
-    // Visual alert as final fallback
-    function playVisualAlert() {
-        console.log('🔔🔔🔔 NEW TICKET ALERT! 🔔🔔🔔 (Visual notification)');
-
-        const flashDiv = document.createElement('div');
-        flashDiv.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(255, 0, 0, 0.3);
-            z-index: 9999;
-            pointer-events: none;
-            animation: flash 0.5s ease-in-out;
-        `;
-
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes flash {
-                0% { opacity: 0; }
-                50% { opacity: 1; }
-                100% { opacity: 0; }
-            }
-        `;
-        document.head.appendChild(style);
-        document.body.appendChild(flashDiv);
-
-        setTimeout(() => {
-            if (flashDiv.parentNode) {
-                flashDiv.parentNode.removeChild(flashDiv);
-            }
-            if (style.parentNode) {
-                style.parentNode.removeChild(style);
-            }
-        }, 500);
-    }
-
-    // Enhanced sound playing with call detection
-    function playSelectedSound() {
-        // Check if agent is on a call or manually muted
-        if (isSoundMuted || detectCallStatus()) {
-            console.log('🔇 Sound muted (agent on call or manually muted)');
-            flashPageTitle();
-            return;
-        }
-
-        console.log('🔊 Attempting to play sound...');
-
-        if (!audioInitialized) {
-            initAudio();
-        }
-
-        setTimeout(() => playAudioFile(), 100);
-        setTimeout(() => playVisualAlert(), 200);
-    }
-
-    // Request notification permission
-    function requestNotificationPermission() {
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission().then(permission => {
-                console.log('🔔 Notification permission:', permission);
-            });
-        }
-    }
-
-    // Background fetch ticket IDs via Zendesk API with rate limiting
-    async function backgroundCheckTickets() {
-        try {
-            updateHeartbeat();
-
-            console.log(`🔍 Background polling for new tickets via API (${currentPollingDelay/1000}s interval)...`);
-
-            const apiUrl = '/api/v2/views/31118901320727/tickets.json?per_page=100';
-
-            const response = await fetch(apiUrl, {
-                credentials: 'same-origin',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                #${Config.ids.toolbar} button,
+                #${Config.ids.toolbar} select {
+                    height: 28px;
+                    border: 1px solid #d8dcde;
+                    border-radius: 4px;
+                    background: #fff;
+                    color: #2f3941;
+                    font: 500 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 }
-            });
 
-            if (response.status === 429) {
-                rateLimitCount++;
-                currentPollingDelay = Math.min(currentPollingDelay * 2, 60000);
-                console.warn(`⏱️ Rate limited! Increasing interval to ${currentPollingDelay/1000}s (attempt ${rateLimitCount})`);
-                restartBackgroundPolling();
+                #${Config.ids.toolbar} button {
+                    width: 28px;
+                    padding: 0;
+                    cursor: pointer;
+                    text-align: center;
+                    font-size: 16px;
+                }
+
+                #${Config.ids.toolbar} select {
+                    max-width: 156px;
+                    padding: 0 6px;
+                    cursor: pointer;
+                }
+
+                #${Config.ids.toolbar} button:hover,
+                #${Config.ids.toolbar} select:hover {
+                    background: #f5f7f9;
+                }
+
+                #${Config.ids.toolbar} button[data-active="true"] {
+                    background: #fff7d6;
+                    border-color: #e7b75f;
+                    color: #5f3b00;
+                }
+
+                #${Config.ids.toolbar} button[data-call="true"] {
+                    background: #fff0eb;
+                    border-color: #e35b35;
+                    color: #8f2f16;
+                }
+
+                .zmt-visual-alert {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 2147483647;
+                    pointer-events: none;
+                    background: rgba(214, 40, 40, 0.25);
+                    animation: zmt-flash 520ms ease-in-out;
+                }
+
+                @keyframes zmt-flash {
+                    0% { opacity: 0; }
+                    45% { opacity: 1; }
+                    100% { opacity: 0; }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    };
+
+    const AudioManager = {
+        initialize() {
+            if (State.audioInitialized) return;
+
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor) {
+                Logger.warn('AudioContext is not supported in this browser.');
                 return;
             }
 
-            if (!response.ok) {
-                console.warn('🔍 API fetch failed:', response.status);
-                consecutiveFailures++;
+            try {
+                State.audioContext = new AudioContextCtor();
+                State.audioInitialized = true;
+            } catch (error) {
+                Logger.warn('Could not initialize audio context.', error);
+            }
+        },
+        async unlock() {
+            AudioManager.initialize();
+            if (!State.audioContext || State.audioUnlocked) return;
+
+            try {
+                if (State.audioContext.state === 'suspended') {
+                    await State.audioContext.resume();
+                }
+
+                const oscillator = State.audioContext.createOscillator();
+                const gain = State.audioContext.createGain();
+                gain.gain.setValueAtTime(0, State.audioContext.currentTime);
+                oscillator.connect(gain);
+                gain.connect(State.audioContext.destination);
+                oscillator.start();
+                oscillator.stop(State.audioContext.currentTime + 0.01);
+                State.audioUnlocked = true;
+                Logger.info('Audio unlocked.');
+            } catch (error) {
+                Logger.warn('Audio unlock failed.', error);
+            }
+        },
+        async playSelected() {
+            const soundKey = Store.getSoundKey();
+            const sound = Config.sounds[soundKey];
+
+            try {
+                const audio = new Audio(sound.url);
+                audio.volume = 0.7;
+                audio.preload = 'auto';
+                await audio.play();
+                Logger.info(`Played sound: ${sound.name}`);
+            } catch (error) {
+                Logger.warn(`Could not play ${sound.name}; using generated beep fallback.`, error);
+                AudioManager.playGeneratedBeep();
+            }
+        },
+        playGeneratedBeep() {
+            AudioManager.initialize();
+            if (!State.audioContext) return;
+
+            try {
+                const now = State.audioContext.currentTime;
+                const oscillator = State.audioContext.createOscillator();
+                const gain = State.audioContext.createGain();
+
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(880, now);
+                oscillator.frequency.setValueAtTime(660, now + 0.12);
+                gain.gain.setValueAtTime(0.0001, now);
+                gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+
+                oscillator.connect(gain);
+                gain.connect(State.audioContext.destination);
+                oscillator.start(now);
+                oscillator.stop(now + 0.5);
+            } catch (error) {
+                Logger.warn('Generated beep failed.', error);
+            }
+        },
+        bindUnlockEvents() {
+            ['click', 'keydown', 'touchstart', 'mousedown'].forEach(eventName => {
+                document.addEventListener(eventName, AudioManager.unlock, { once: true, passive: true });
+            });
+        }
+    };
+
+    const AlertManager = {
+        isSoundBlocked() {
+            return State.manuallyMuted || State.onCall;
+        },
+        async alertNewTickets(ticketIds) {
+            Logger.info(`New ticket alert for ${ticketIds.length} ticket(s): ${ticketIds.join(', ')}`);
+            AlertManager.flashTitle();
+            AlertManager.showNotification(ticketIds);
+
+            if (AlertManager.isSoundBlocked()) {
+                Logger.info(State.onCall ? 'Sound skipped because active call was detected.' : 'Sound skipped because manual mute is enabled.');
+                AlertManager.showVisualAlert();
                 return;
             }
 
-            consecutiveFailures = 0;
+            await AudioManager.playSelected();
+            AlertManager.showVisualAlert();
+        },
+        showNotification(ticketIds) {
+            if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
-            if (rateLimitCount > 0) {
-                rateLimitCount = 0;
-                currentPollingDelay = Math.max(currentPollingDelay * 0.8, 10000);
-                console.log(`🔍 API recovered, reducing interval to ${currentPollingDelay/1000}s`);
-                restartBackgroundPolling();
-            }
-
-            const data = await response.json();
-            console.log('🔍 API response tickets:', data.tickets ? data.tickets.length : 0);
-
-            let currentTicketIds = new Set();
-
-            if (data && data.tickets) {
-                data.tickets.forEach(ticket => {
-                    currentTicketIds.add(ticket.id);
+            try {
+                new Notification('New Zendesk Ticket', {
+                    body: `${ticketIds.length} new ticket(s): #${ticketIds.join(', #')}`,
+                    icon: 'https://static.zdassets.com/classic/favicon.ico'
                 });
-                console.log(`🔍 API extracted ${currentTicketIds.size} ticket IDs`);
+            } catch (error) {
+                Logger.warn('Notification failed.', error);
+            }
+        },
+        flashTitle() {
+            const originalTitle = State.originalTitle || document.title;
+
+            if (State.titleFlashTimer) {
+                Scheduler.clear(State.titleFlashTimer);
+                State.titleFlashTimer = null;
             }
 
-            if (typeof window.isInitialLoad === 'undefined') {
-                window.isInitialLoad = true;
-                window.initialTicketCount = 0;
-            }
-
-            if (window.isInitialLoad) {
-                const ticketCount = currentTicketIds.size;
-                window.initialTicketCount = ticketCount;
-                previousTicketIds = new Set(currentTicketIds);
-                window.isInitialLoad = false;
-
-                if (ticketCount === 0) {
-                    console.log('🔍 Initial load: Queue is empty - will alert on first new ticket');
-                } else {
-                    console.log(`🔍 Initial load: Found ${ticketCount} existing tickets - will only alert on additional tickets`);
+            State.titleFlashTimer = Scheduler.setInterval(() => {
+                if (document.hidden) {
+                    document.title = document.title === originalTitle ? 'NEW TICKET' : originalTitle;
+                    return;
                 }
-                return;
+
+                AlertManager.stopTitleFlash(originalTitle);
+            }, Config.titleFlashMs);
+
+            Scheduler.setTimeout(() => AlertManager.stopTitleFlash(originalTitle), Config.titleFlashTimeoutMs);
+        },
+        stopTitleFlash(title) {
+            if (State.titleFlashTimer) {
+                Scheduler.clear(State.titleFlashTimer);
+                State.titleFlashTimer = null;
             }
+            document.title = title || State.originalTitle || document.title;
+        },
+        showVisualAlert() {
+            const flash = document.createElement('div');
+            flash.className = 'zmt-visual-alert';
+            document.body.appendChild(flash);
+            Scheduler.setTimeout(() => flash.remove(), 600);
+        }
+    };
 
-            if (previousTicketIds.size > 0 || window.initialTicketCount === 0) {
-                const newTicketIds = [...currentTicketIds].filter(id => !previousTicketIds.has(id));
+    const ZendeskApi = {
+        async fetchViewTickets() {
+            const controller = new AbortController();
+            const timeout = Scheduler.setTimeout(() => controller.abort(), Config.fetchTimeoutMs);
+            State.pollAbortController = controller;
 
-                if (newTicketIds.length > 0) {
-                    if (window.initialTicketCount === 0 || previousTicketIds.size > 0) {
-                        console.log(`🎫 NEW TICKETS DETECTED! ${newTicketIds.length} new ticket(s): ${newTicketIds.join(', ')}`);
-
-                        if ('Notification' in window && Notification.permission === 'granted') {
-                            new Notification('🎫 New Zendesk Ticket!', {
-                                body: `${newTicketIds.length} new ticket(s): #${newTicketIds.join(', #')}`,
-                                icon: 'https://static.zdassets.com/classic/favicon.ico'
-                            });
-                        }
-
-                        flashPageTitle();
-                        playSelectedSound();
+            try {
+                const response = await fetch(`/api/v2/views/${Config.viewId}/tickets.json?per_page=100`, {
+                    credentials: 'same-origin',
+                    signal: controller.signal,
+                    headers: {
+                        Accept: 'application/json'
                     }
-                }
-
-                const removedTicketIds = [...previousTicketIds].filter(id => !currentTicketIds.has(id));
-                if (removedTicketIds.length > 0) {
-                    console.log(`🗑️ Tickets removed/resolved: ${removedTicketIds.join(', ')}`);
-                }
-            }
-
-            previousTicketIds = currentTicketIds;
-            console.log(`🔍 Tracking ${previousTicketIds.size} tickets`);
-
-        } catch (error) {
-            console.warn('🔍 API polling error:', error);
-            consecutiveFailures++;
-        }
-    }
-
-    // Add mute toggle button
-    function addMuteToggleButton() {
-        if (muteToggleAdded) return;
-
-        // FIXED: Use stable data-test-id selector instead of brittle CSS classes
-        const tabBar = document.querySelector('[data-test-id="header-tablist"]');
-        if (!tabBar) return;
-
-        const button = document.createElement('button');
-        button.id = 'manual-mute-toggle';
-        button.style.cssText = `
-            margin-left: 8px;
-            padding: 6px 12px;
-            cursor: pointer;
-            font-weight: 500;
-            background-color: #f8f9fa;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 12px;
-            color: #333;
-        `;
-
-        button.addEventListener('click', function() {
-            if (!isAgentOnCall) {
-                isSoundMuted = !isSoundMuted;
-                updateMuteButtonState();
-                console.log(isSoundMuted ? '🔇 Sounds manually muted' : '🔊 Sounds manually unmuted');
-            }
-        });
-
-        button.addEventListener('mouseenter', () => {
-            if (!isSoundMuted && !isAgentOnCall) {
-                button.style.backgroundColor = '#e9ecef';
-            }
-        });
-        button.addEventListener('mouseleave', () => {
-            updateMuteButtonState();
-        });
-
-        tabBar.appendChild(button);
-        muteToggleAdded = true;
-        console.log('✅ Mute toggle button added');
-        updateMuteButtonState();
-    }
-
-    // Add sound selector dropdown
-    function addSoundSelector() {
-        if (soundSelectorAdded) return;
-
-        // This depends on the mute button existing first
-        const muteButton = document.querySelector('[id="manual-mute-toggle"]');
-        if (!muteButton) return;
-
-        const container = document.createElement('div');
-        container.style.cssText = `
-            position: fixed;
-            top: 12px;
-            right: 200px;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            z-index: 9999;
-        `;
-
-        const label = document.createElement('span');
-        //label.textContent = '🔊';
-        label.style.cssText = 'font-size: 12px;';
-
-        const selector = document.createElement('select');
-        selector.style.cssText = `
-            padding: 4px 6px;
-            font-size: 11px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            background-color: #fff;
-            cursor: pointer;
-        `;
-
-        Object.entries(SOUND_OPTIONS).forEach(([key, config]) => {
-            const option = document.createElement('option');
-            option.value = key;
-            option.textContent = `${config.emoji} ${config.name}`;
-            selector.appendChild(option);
-        });
-
-        selector.value = getSelectedSound();
-
-        selector.addEventListener('change', (e) => {
-            const newSound = e.target.value;
-            setSelectedSound(newSound);
-            initAudio();
-            unlockAudio();
-            setTimeout(() => {
-                playSelectedSound();
-            }, 100);
-        });
-
-        const testButton = document.createElement('button');
-        testButton.textContent = '🔊';
-        testButton.title = 'Test current sound';
-        testButton.style.cssText = `
-            padding: 4px 6px;
-            font-size: 11px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            background-color: #f8f9fa;
-            cursor: pointer;
-            margin-left: 2px;
-        `;
-
-        testButton.addEventListener('click', () => {
-            initAudio();
-            unlockAudio();
-            playSelectedSound();
-        });
-
-        testButton.addEventListener('mouseenter', () => {
-            testButton.style.backgroundColor = '#e9ecef';
-        });
-        testButton.addEventListener('mouseleave', () => {
-            testButton.style.backgroundColor = '#f8f9fa';
-        });
-
-        container.appendChild(label);
-        container.appendChild(selector);
-        container.appendChild(testButton);
-
-        muteButton.after(container);
-
-        soundSelectorAdded = true;
-        console.log('🔊 Sound selector added');
-    }
-
-    // Auto-refresh views
-    function autoRefresh() {
-        const refreshBtn = document.querySelector('[data-test-id="views_views-list_header-refresh"]');
-        if (refreshBtn) {
-            refreshBtn.click();
-            console.debug('[Auto-Refresh] clicked refresh');
-        } else {
-            console.warn('[Auto-Refresh] refresh button not found yet');
-        }
-    }
-
-    // Add Close All button
-    function addCloseAllButton() {
-        if (closeAllButtonAdded) return;
-
-        const tabBar = document.querySelector('[data-test-id="header-tablist"]');
-        if (!tabBar) return;
-
-        const button = document.createElement('button');
-        button.textContent = '🗙 Close All';
-        button.style.cssText = `
-            margin-left: 8px;
-            padding: 6px 12px;
-            cursor: pointer;
-            font-weight: 500;
-            background-color: #f8f9fa;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 12px;
-            color: #333;
-        `;
-
-        button.addEventListener('click', function() {
-            initAudio();
-            unlockAudio();
-
-            const closeBtns = tabBar.querySelectorAll('button[data-test-id="close-button"]');
-            closeBtns.forEach(btn => btn.click());
-            console.log(`🗙 Closed ${closeBtns.length} tabs`);
-        });
-
-        button.addEventListener('mouseenter', () => {
-            button.style.backgroundColor = '#e9ecef';
-        });
-        button.addEventListener('mouseleave', () => {
-            button.style.backgroundColor = '#f8f9fa';
-        });
-
-        tabBar.appendChild(button);
-        closeAllButtonAdded = true;
-        console.log('✅ Close All button added');
-    }
-
-    // Start call detection monitoring
-    function startCallDetection() {
-        callDetectionInterval = setInterval(detectCallStatus, 2000);
-        console.log('📞 Call detection monitoring started');
-    }
-
-    // Initialize everything
-    function init() {
-        console.log('🚀 Initializing...');
-
-        setTimeout(() => {
-            initAudio();
-        }, 1000);
-
-        if (window.location.href.includes('/agent/filters')) {
-            setTimeout(() => {
-                autoRefresh();
-                refreshInterval = setInterval(autoRefresh, 10000);
-                console.log('🔄 Auto-refresh started (filters page only)');
-            }, 5000);
-        }
-
-        setTimeout(() => {
-            console.log('🛡️ Starting background ticket monitoring with reliability features...');
-            startReliabilitySystem();
-            console.log(`🔍 Background monitoring active with health checks every ${HEALTH_CHECK_INTERVAL/1000}s`);
-        }, 3000);
-
-        setTimeout(startCallDetection, 3000);
-
-        requestNotificationPermission();
-
-        // FIXED: Reordered so mute button is created BEFORE sound selector tries to find it
-        const buttonChecker = setInterval(() => {
-            addCloseAllButton();
-            addMuteToggleButton();// Must run before addSoundSelector
-            addSoundSelector();
-            if (closeAllButtonAdded && soundSelectorAdded && muteToggleAdded) {
-                clearInterval(buttonChecker);
-            }
-        }, 1000);
-
-        setTimeout(() => clearInterval(buttonChecker), 30000);
-    }
-
-    setTimeout(() => {
-        init();
-
-        setTimeout(() => {
-            try {
-                const clickEvent = new MouseEvent('click', {
-                    view: window,
-                    bubbles: true,
-                    cancelable: true
                 });
-                document.dispatchEvent(clickEvent);
 
-                initAudio();
-                unlockAudio();
-
-                console.log('🔊 Enhanced audio initialization complete');
-            } catch (error) {
-                console.warn('🔊 Enhanced audio init failed:', error);
+                return response;
+            } finally {
+                Scheduler.clear(timeout);
+                State.pollAbortController = null;
             }
-        }, 1000);
-    }, 1000);
+        }
+    };
 
-    console.log('🔧 Script loaded successfully');
+    const TicketMonitor = {
+        start() {
+            TicketMonitor.scheduleNextPoll(500);
+        },
+        stop() {
+            if (State.pollTimer) {
+                Scheduler.clear(State.pollTimer);
+                State.pollTimer = null;
+            }
 
+            if (State.pollAbortController) {
+                State.pollAbortController.abort();
+                State.pollAbortController = null;
+            }
+        },
+        scheduleNextPoll(delayMs) {
+            if (State.pollTimer) Scheduler.clear(State.pollTimer);
+            State.pollTimer = Scheduler.setTimeout(TicketMonitor.poll, delayMs);
+        },
+        async poll() {
+            if (State.pollInFlight) {
+                Logger.warn('Previous poll still running; skipping this cycle.');
+                TicketMonitor.scheduleNextPoll(State.pollingDelayMs);
+                return;
+            }
+
+            State.pollInFlight = true;
+            State.lastPollStartedAt = Date.now();
+            Ui.update();
+
+            try {
+                const response = await ZendeskApi.fetchViewTickets();
+
+                if (response.status === 429) {
+                    TicketMonitor.handleRateLimit(response);
+                    return;
+                }
+
+                if (!response.ok) {
+                    Logger.warn(`Ticket poll failed with HTTP ${response.status}.`);
+                    TicketMonitor.increasePollingDelay();
+                    return;
+                }
+
+                const data = await response.json();
+                const currentTicketIds = new Set((data.tickets || []).map(ticket => ticket.id));
+                State.lastSuccessfulPollAt = Date.now();
+                State.lastTicketCount = currentTicketIds.size;
+
+                TicketMonitor.handleTicketSnapshot(currentTicketIds);
+                TicketMonitor.handleRecovery();
+            } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    Logger.warn('Ticket poll timed out.');
+                } else {
+                    Logger.warn('Ticket poll failed.', error);
+                }
+                TicketMonitor.increasePollingDelay();
+            } finally {
+                State.pollInFlight = false;
+                State.lastPollCompletedAt = Date.now();
+                Ui.update();
+                TicketMonitor.scheduleNextPoll(State.pollingDelayMs);
+            }
+        },
+        handleTicketSnapshot(currentTicketIds) {
+            if (State.initialLoad) {
+                State.previousTicketIds = currentTicketIds;
+                State.initialLoad = false;
+                Logger.info(`Initial ticket snapshot captured: ${currentTicketIds.size} ticket(s).`);
+                return;
+            }
+
+            const newTicketIds = [...currentTicketIds].filter(id => !State.previousTicketIds.has(id));
+            const removedTicketIds = [...State.previousTicketIds].filter(id => !currentTicketIds.has(id));
+
+            if (newTicketIds.length > 0) {
+                AlertManager.alertNewTickets(newTicketIds);
+            }
+
+            if (removedTicketIds.length > 0) {
+                Logger.info(`Tickets removed from view: ${removedTicketIds.join(', ')}`);
+            }
+
+            State.previousTicketIds = currentTicketIds;
+        },
+        handleRateLimit(response) {
+            State.rateLimitCount += 1;
+
+            const retryAfter = Number(response.headers.get('Retry-After'));
+            if (Number.isFinite(retryAfter) && retryAfter > 0) {
+                State.pollingDelayMs = Math.min(retryAfter * 1000, Config.maxPollingDelayMs);
+            } else {
+                TicketMonitor.increasePollingDelay();
+            }
+
+            Logger.warn(`Rate limited by Zendesk. Next poll in ${Math.round(State.pollingDelayMs / 1000)}s.`);
+        },
+        handleRecovery() {
+            if (State.rateLimitCount > 0 || State.pollingDelayMs > Config.minPollingDelayMs) {
+                State.rateLimitCount = 0;
+                State.pollingDelayMs = Math.max(Config.minPollingDelayMs, Math.floor(State.pollingDelayMs * 0.8));
+            }
+        },
+        increasePollingDelay() {
+            State.pollingDelayMs = Math.min(Config.maxPollingDelayMs, Math.max(Config.minPollingDelayMs, State.pollingDelayMs * 2));
+        },
+        boostForVisibleTab() {
+            if (document.hidden) return;
+            if (State.pollingDelayMs > Config.minPollingDelayMs) {
+                State.pollingDelayMs = Config.minPollingDelayMs;
+            }
+            TicketMonitor.scheduleNextPoll(500);
+        }
+    };
+
+    const CallDetector = {
+        start() {
+            CallDetector.detect();
+            Scheduler.setInterval(CallDetector.detect, Config.callDetectionDelayMs);
+        },
+        detect() {
+            const activeCallElement = Config.selectors.activeCall
+                .map(selector => {
+                    try {
+                        return document.querySelector(selector);
+                    } catch (error) {
+                        Logger.warn(`Invalid call detection selector skipped: ${selector}`, error);
+                        return null;
+                    }
+                })
+                .find(Boolean);
+
+            const wasOnCall = State.onCall;
+            State.onCall = Boolean(activeCallElement);
+
+            if (wasOnCall !== State.onCall) {
+                Logger.info(State.onCall ? 'Active call detected; alerts muted.' : 'Active call ended; alert state restored.');
+                Ui.update();
+            }
+        }
+    };
+
+    const AutoRefresh = {
+        start() {
+            if (!window.location.pathname.includes('/agent/filters')) return;
+
+            Scheduler.setTimeout(() => {
+                AutoRefresh.refresh();
+                Scheduler.setInterval(AutoRefresh.refresh, Config.autoRefreshDelayMs);
+            }, 5000);
+        },
+        refresh() {
+            const refreshButton = document.querySelector(Config.selectors.refreshButton);
+            if (!refreshButton) return;
+            refreshButton.click();
+            Logger.info('Zendesk view refreshed.');
+        }
+    };
+
+    const Ui = {
+        start() {
+            Styles.ensure();
+            Ui.reconcile();
+            Scheduler.setInterval(Ui.reconcile, Config.uiReconcileDelayMs);
+
+            State.mutationObserver = new MutationObserver(Ui.queueReconcile);
+            State.mutationObserver.observe(document.body, { childList: true });
+        },
+        queueReconcile() {
+            if (State.uiReconcileQueued) return;
+            State.uiReconcileQueued = true;
+
+            Scheduler.setTimeout(() => {
+                State.uiReconcileQueued = false;
+                Ui.reconcile();
+            }, 500);
+        },
+        reconcile() {
+            const toolbarHost = Ui.findToolbarHost();
+            if (!toolbarHost) return;
+
+            let toolbar = document.getElementById(Config.ids.toolbar);
+            if (toolbar && toolbar.parentElement !== toolbarHost) {
+                toolbar.remove();
+                toolbar = null;
+            }
+
+            if (!toolbar) {
+                toolbar = Ui.createToolbar();
+                Ui.insertToolbar(toolbarHost, toolbar);
+            }
+
+            Ui.update();
+        },
+        findToolbarHost() {
+            const anchorSelector = Config.selectors.toolbarAnchors.join(',');
+            const anchor = document.querySelector(anchorSelector);
+            const headerHost = anchor ? anchor.closest('header, [data-test-id*="header" i], [data-test-id*="topbar" i], [role="toolbar"]') : null;
+
+            if (headerHost) return headerHost;
+
+            for (const selector of Config.selectors.toolbarHosts) {
+                const host = document.querySelector(selector);
+                if (host) return host;
+            }
+
+            return document.querySelector(Config.selectors.tabBar);
+        },
+        insertToolbar(host, toolbar) {
+            const anchorSelector = Config.selectors.toolbarAnchors.join(',');
+            const anchor = host.querySelector(anchorSelector);
+
+            if (anchor) {
+                anchor.insertAdjacentElement('beforebegin', toolbar);
+                toolbar.style.marginLeft = '0';
+                return;
+            }
+
+            host.appendChild(toolbar);
+        },
+        createToolbar() {
+            const toolbar = document.createElement('div');
+            toolbar.id = Config.ids.toolbar;
+
+            const closeButton = Ui.button(Config.ids.closeAllButton, 'X', 'Close all open Zendesk tabs');
+            closeButton.addEventListener('click', Ui.closeAllTabs);
+
+            const muteButton = Ui.button(Config.ids.muteButton, '🔇', 'Mute or unmute alert sounds');
+            muteButton.addEventListener('click', () => {
+                State.manuallyMuted = !State.manuallyMuted;
+                Store.setBoolean('manuallyMuted', State.manuallyMuted);
+                Ui.update();
+            });
+
+            const selector = document.createElement('select');
+            selector.id = Config.ids.soundSelector;
+            selector.title = 'Alert sound';
+
+            Object.entries(Config.sounds).forEach(([key, sound]) => {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = `${sound.icon} - ${sound.name}`;
+                selector.appendChild(option);
+            });
+
+            selector.value = Store.getSoundKey();
+            selector.addEventListener('change', async event => {
+                Store.setSoundKey(event.target.value);
+                await AudioManager.unlock();
+                await AudioManager.playSelected();
+                Ui.update();
+            });
+
+            toolbar.append(closeButton, muteButton, selector);
+            return toolbar;
+        },
+        button(id, text, title) {
+            const button = document.createElement('button');
+            button.id = id;
+            button.type = 'button';
+            button.textContent = text;
+            button.title = title;
+            return button;
+        },
+        update() {
+            const muteButton = document.getElementById(Config.ids.muteButton);
+            const selector = document.getElementById(Config.ids.soundSelector);
+
+            if (selector) selector.value = Store.getSoundKey();
+
+            if (muteButton) {
+                muteButton.dataset.active = String(State.manuallyMuted);
+                muteButton.dataset.call = String(State.onCall);
+                muteButton.textContent = '🔇';
+                muteButton.title = State.onCall
+                    ? 'Alert sounds are muted while an active call is detected'
+                    : State.manuallyMuted
+                        ? 'Alert sounds are manually muted'
+                        : 'Mute alert sounds';
+            }
+
+        },
+        closeAllTabs() {
+            AudioManager.unlock();
+
+            const tabBar = document.querySelector(Config.selectors.tabBar);
+            if (!tabBar) return;
+
+            const closeButtons = [...tabBar.querySelectorAll(Config.selectors.closeButtons)];
+            closeButtons.forEach(button => button.click());
+            Logger.info(`Closed ${closeButtons.length} Zendesk tab(s).`);
+        }
+    };
+
+    const App = {
+        start() {
+            Logger.info('Starting version 2.0.7.');
+            State.manuallyMuted = Store.getBoolean('manuallyMuted', false);
+
+            AudioManager.bindUnlockEvents();
+            Ui.start();
+            CallDetector.start();
+            TicketMonitor.start();
+            AutoRefresh.start();
+
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    AlertManager.stopTitleFlash(State.originalTitle);
+                    TicketMonitor.boostForVisibleTab();
+                }
+            });
+
+            window.addEventListener('beforeunload', App.stop);
+            Logger.info('Started successfully.');
+        },
+        stop() {
+            TicketMonitor.stop();
+            Scheduler.cleanup();
+
+            if (State.mutationObserver) {
+                State.mutationObserver.disconnect();
+                State.mutationObserver = null;
+            }
+        }
+    };
+
+    App.start();
 })();
