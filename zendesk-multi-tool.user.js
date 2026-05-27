@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Multi-Tool with Audible Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2.0.7
+// @version      2.0.8
 // @description  Reliable Zendesk view polling, close-all tabs, sound alerts, notifications, and call-aware muting.
 // @author       Roger Rhodes
 // @match        https://elotouchcare.zendesk.com/agent/*
@@ -24,6 +24,8 @@
         uiReconcileDelayMs: 1500,
         titleFlashMs: 800,
         titleFlashTimeoutMs: 300000,
+        leaderRenewalMs: 5000,
+        leaderTimeoutMs: 15000,
         storagePrefix: 'zendesk-multi-tool',
         ids: {
             toolbar: 'zmt-toolbar',
@@ -159,6 +161,7 @@
         audioInitialized: false,
         audioContext: null,
         pollingDelayMs: Config.minPollingDelayMs,
+        ticketMonitorActive: false,
         pollTimer: null,
         pollInFlight: false,
         pollAbortController: null,
@@ -171,6 +174,11 @@
         uiReconcileQueued: false,
         titleFlashTimer: null,
         originalTitle: document.title,
+        tabId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        isLeader: false,
+        leaderRenewTimer: null,
+        leaderCheckTimer: null,
+        storageHandler: null,
         timers: new Set()
     };
 
@@ -399,6 +407,11 @@
             return State.manuallyMuted || State.onCall;
         },
         async alertNewTickets(ticketIds) {
+            if (!State.isLeader) {
+                Logger.info(`Skipping alert for ${ticketIds.length} ticket(s) because this tab is a follower.`);
+                return;
+            }
+
             Logger.info(`New ticket alert for ${ticketIds.length} ticket(s): ${ticketIds.join(', ')}`);
             AlertManager.flashTitle();
             AlertManager.showNotification(ticketIds);
@@ -483,9 +496,13 @@
 
     const TicketMonitor = {
         start() {
+            if (State.ticketMonitorActive) return;
+            State.ticketMonitorActive = true;
             TicketMonitor.scheduleNextPoll(500);
         },
         stop() {
+            State.ticketMonitorActive = false;
+
             if (State.pollTimer) {
                 Scheduler.clear(State.pollTimer);
                 State.pollTimer = null;
@@ -497,10 +514,13 @@
             }
         },
         scheduleNextPoll(delayMs) {
+            if (!State.ticketMonitorActive) return;
             if (State.pollTimer) Scheduler.clear(State.pollTimer);
             State.pollTimer = Scheduler.setTimeout(TicketMonitor.poll, delayMs);
         },
         async poll() {
+            if (!State.ticketMonitorActive) return;
+
             if (State.pollInFlight) {
                 Logger.warn('Previous poll still running; skipping this cycle.');
                 TicketMonitor.scheduleNextPoll(State.pollingDelayMs);
@@ -543,7 +563,9 @@
                 State.pollInFlight = false;
                 State.lastPollCompletedAt = Date.now();
                 Ui.update();
-                TicketMonitor.scheduleNextPoll(State.pollingDelayMs);
+                if (State.ticketMonitorActive) {
+                    TicketMonitor.scheduleNextPoll(State.pollingDelayMs);
+                }
             }
         },
         handleTicketSnapshot(currentTicketIds) {
@@ -753,14 +775,18 @@
             if (selector) selector.value = Store.getSoundKey();
 
             if (muteButton) {
+                const tabRole = State.isLeader
+                    ? 'Leader tab: this tab handles ticket alerts'
+                    : 'Follower tab: another Zendesk tab handles ticket alerts';
+
                 muteButton.dataset.active = String(State.manuallyMuted);
                 muteButton.dataset.call = String(State.onCall);
                 muteButton.textContent = '🔇';
                 muteButton.title = State.onCall
-                    ? 'Alert sounds are muted while an active call is detected'
+                    ? `Alert sounds are muted while an active call is detected\n${tabRole}`
                     : State.manuallyMuted
-                        ? 'Alert sounds are manually muted'
-                        : 'Mute alert sounds';
+                        ? `Alert sounds are manually muted\n${tabRole}`
+                        : `Mute alert sounds\n${tabRole}`;
             }
 
         },
@@ -776,15 +802,155 @@
         }
     };
 
+    const TabCoordinator = {
+        start() {
+            State.storageHandler = TabCoordinator.handleStorageEvent;
+            window.addEventListener('storage', State.storageHandler);
+
+            TabCoordinator.evaluateLeadership();
+            State.leaderCheckTimer = Scheduler.setInterval(TabCoordinator.evaluateLeadership, Config.leaderRenewalMs);
+        },
+        stop() {
+            if (State.storageHandler) {
+                window.removeEventListener('storage', State.storageHandler);
+                State.storageHandler = null;
+            }
+
+            if (State.leaderRenewTimer) {
+                Scheduler.clear(State.leaderRenewTimer);
+                State.leaderRenewTimer = null;
+            }
+
+            if (State.leaderCheckTimer) {
+                Scheduler.clear(State.leaderCheckTimer);
+                State.leaderCheckTimer = null;
+            }
+
+            TabCoordinator.releaseLeadership();
+            State.isLeader = false;
+            TicketMonitor.stop();
+            Ui.update();
+        },
+        handleStorageEvent(event) {
+            if (event.key === Store.key('leader')) {
+                TabCoordinator.evaluateLeadership();
+                return;
+            }
+
+            if (event.key === Store.key('manuallyMuted')) {
+                State.manuallyMuted = Store.getBoolean('manuallyMuted', false);
+                Ui.update();
+                return;
+            }
+
+            if (event.key === Store.key('sound')) {
+                Ui.update();
+            }
+        },
+        evaluateLeadership() {
+            const leader = TabCoordinator.readLeader();
+
+            if (TabCoordinator.isValidLeader(leader) && leader.tabId !== State.tabId) {
+                TabCoordinator.becomeFollower();
+                return;
+            }
+
+            TabCoordinator.claimLeadership();
+        },
+        claimLeadership() {
+            const now = Date.now();
+            const leader = {
+                tabId: State.tabId,
+                updatedAt: now,
+                expiresAt: now + Config.leaderTimeoutMs
+            };
+
+            localStorage.setItem(Store.key('leader'), JSON.stringify(leader));
+
+            const confirmedLeader = TabCoordinator.readLeader();
+            if (confirmedLeader && confirmedLeader.tabId === State.tabId) {
+                TabCoordinator.becomeLeader();
+            } else {
+                TabCoordinator.becomeFollower();
+            }
+        },
+        becomeLeader() {
+            const wasLeader = State.isLeader;
+            State.isLeader = true;
+
+            if (!State.leaderRenewTimer) {
+                State.leaderRenewTimer = Scheduler.setInterval(TabCoordinator.renewLeadership, Config.leaderRenewalMs);
+            }
+
+            TicketMonitor.start();
+            if (!wasLeader) {
+                Logger.info('This tab is now the alert leader.');
+            }
+            Ui.update();
+        },
+        becomeFollower() {
+            const wasLeader = State.isLeader;
+            State.isLeader = false;
+
+            if (State.leaderRenewTimer) {
+                Scheduler.clear(State.leaderRenewTimer);
+                State.leaderRenewTimer = null;
+            }
+
+            TicketMonitor.stop();
+            if (wasLeader) {
+                Logger.info('This tab is now an alert follower.');
+            }
+            Ui.update();
+        },
+        renewLeadership() {
+            if (!State.isLeader) return;
+
+            const leader = TabCoordinator.readLeader();
+            if (TabCoordinator.isValidLeader(leader) && leader.tabId !== State.tabId) {
+                TabCoordinator.becomeFollower();
+                return;
+            }
+
+            TabCoordinator.claimLeadership();
+        },
+        releaseLeadership() {
+            const leader = TabCoordinator.readLeader();
+            if (leader && leader.tabId === State.tabId) {
+                localStorage.removeItem(Store.key('leader'));
+            }
+        },
+        readLeader() {
+            const rawLeader = localStorage.getItem(Store.key('leader'));
+            if (!rawLeader) return null;
+
+            try {
+                return JSON.parse(rawLeader);
+            } catch (error) {
+                Logger.warn('Invalid leader lock found; replacing it.', error);
+                localStorage.removeItem(Store.key('leader'));
+                return null;
+            }
+        },
+        isValidLeader(leader) {
+            return Boolean(
+                leader &&
+                typeof leader.tabId === 'string' &&
+                Number.isFinite(leader.expiresAt) &&
+                leader.expiresAt > Date.now()
+            );
+        }
+    };
+
     const App = {
         start() {
-            Logger.info('Starting version 2.0.7.');
+            Logger.info('Starting version 2.0.8.');
             State.manuallyMuted = Store.getBoolean('manuallyMuted', false);
 
             AudioManager.bindUnlockEvents();
             Ui.start();
             CallDetector.start();
-            TicketMonitor.start();
+            TabCoordinator.start();
             AutoRefresh.start();
 
             document.addEventListener('visibilitychange', () => {
@@ -798,6 +964,7 @@
             Logger.info('Started successfully.');
         },
         stop() {
+            TabCoordinator.stop();
             TicketMonitor.stop();
             Scheduler.cleanup();
 
